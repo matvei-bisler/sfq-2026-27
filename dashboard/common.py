@@ -9,6 +9,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
 from scipy import stats
 
@@ -20,14 +22,15 @@ DOCS_DIR = PROJECT_ROOT / "docs"
 
 ROUND_DECIMALS = 2
 
-# Categorical order is fixed (never cycled) and CVD-validated for adjacent pairs.
-PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+# The 2025-26 hues, reordered so that adjacent series stay distinguishable
+# (checked for colour-vision deficiency). Order is fixed, never cycled.
+PALETTE = ["#1D4ED8", "#F59E0B", "#14B8A6", "#EF4444", "#A855F7", "#0EA5E9", "#22C55E"]
 ACCENT = PALETTE[0]
 MUTED = "#94A3B8"
-SEQUENTIAL = "Blues"
-DIVERGING = "RdBu"
 
-px.defaults.template = "plotly_white"
+# Russian number format in charts: decimal comma, thin space for thousands.
+pio.templates["sfq"] = go.layout.Template(layout=go.Layout(separators=", "))
+px.defaults.template = "plotly_white+sfq"
 px.defaults.color_discrete_sequence = PALETTE
 
 PAGE_CSS = """
@@ -54,7 +57,50 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"], [data-testid="st
 """
 
 
-# ── Generic helpers ───────────────────────────────────────────────────────────
+# ── Formatting ───────────────────────────────────────────────────────────────
+
+def fmt(x, decimals: int = 2) -> str:
+    """Number with a decimal comma; «н/д» for missing values."""
+    try:
+        if x is None or not np.isfinite(float(x)):
+            return "н/д"
+    except (TypeError, ValueError):
+        return "н/д"
+    return f"{float(x):,.{decimals}f}".replace(",", " ").replace(".", ",")
+
+
+def fmt_p(p) -> str:
+    """p-value: «< 0,001» instead of a row of zeros."""
+    try:
+        if p is not None and np.isfinite(float(p)) and float(p) < 0.001:
+            return "< 0,001"
+    except (TypeError, ValueError):
+        pass
+    return fmt(p, 3)
+
+
+def fmt_pct(x, decimals: int = 0) -> str:
+    s = fmt(x, decimals)
+    return s if s == "н/д" else f"{s}%"
+
+
+def show_table(df: pd.DataFrame, decimals: int = ROUND_DECIMALS, **kwargs) -> None:
+    """st.dataframe with Russian number format (decimal comma)."""
+    kwargs.setdefault("width", "stretch")
+    num = df.select_dtypes(include=[np.number]).columns
+    if len(num) == 0 or df.empty:
+        st.dataframe(df, **kwargs)
+        return
+    styler = df.style.format(
+        {c: ("{:,.0f}" if pd.api.types.is_integer_dtype(df[c]) else f"{{:,.{decimals}f}}") for c in num},
+        decimal=",",
+        thousands=" ",
+        na_rep="—",
+    )
+    st.dataframe(styler, **kwargs)
+
+
+# ── Generic helpers ──────────────────────────────────────────────────────────
 
 def num_cols(df: pd.DataFrame) -> list[str]:
     return df.select_dtypes(include=[np.number]).columns.tolist()
@@ -101,8 +147,8 @@ def shorten_program_name(name: str, max_len: int = 34) -> str:
     s = str(name).strip()
     replacements = {
         "Менеджмент в креативных индустриях (сетевая программа)": "Менеджмент в КИ (сетевая)",
-        "Двухмерная графика: анимация, концепт-арт, комиксы": "2D-графика: анимация, концепт-арт",
-        "Стратегические коммуникации и управление репутацией": "Стратег. коммуникации и репутация",
+        "Двухмерная графика: анимация, концепт-арт, комиксы": "Двухмерная графика",
+        "Стратегические коммуникации и управление репутацией": "Стратегические коммуникации",
         "Архитектурное проектирование и реконструкция зданий": "Арх. проектирование и реконструкция",
         "в креативных индустриях": "в КИ",
         "и городских общественных пространств": "и городских пространств",
@@ -181,25 +227,26 @@ class FilterState:
 
 def build_filters(df: pd.DataFrame, key_prefix: str) -> FilterState:
     st.sidebar.header("Фильтры")
-    st.sidebar.caption("Фильтры применяются ко всем вкладкам дашборда.")
+    st.sidebar.caption("Фильтры применяются ко всем вкладкам.")
 
     programs = sorted(df["program"].dropna().unique().tolist()) if "program" in df.columns else []
     years = sorted(df["year"].dropna().unique().tolist()) if "year" in df.columns else []
     schools = sorted(df["school"].dropna().unique().tolist()) if "school" in df.columns else []
 
-    selected_schools = st.sidebar.multiselect("Школа", schools, default=schools, key=f"{key_prefix}_schools")
-    selected_years = st.sidebar.multiselect("Курс", years, default=years, key=f"{key_prefix}_years")
     selected_programs = st.sidebar.multiselect("Программа", programs, default=programs, key=f"{key_prefix}_programs")
+    selected_years = st.sidebar.multiselect("Курс", years, default=years, key=f"{key_prefix}_years")
+    selected_schools = st.sidebar.multiselect("Школа", schools, default=schools, key=f"{key_prefix}_schools")
     short_program_labels = st.sidebar.checkbox(
         "Сокращать длинные названия программ",
         value=True,
-        help="Укорачивает подписи в графиках/легендах для лучшей читаемости, особенно на телефоне.",
+        help="Сокращает подписи на графиках и в легендах, чтобы их было удобнее читать, особенно с телефона.",
         key=f"{key_prefix}_short",
     )
+    # A full selection means "no filter", so rows with an unknown school/course are kept.
     return FilterState(
-        programs=selected_programs,
-        years=selected_years,
-        schools=selected_schools,
+        programs=[] if set(selected_programs) == set(programs) else selected_programs,
+        years=[] if set(selected_years) == set(years) else selected_years,
+        schools=[] if set(selected_schools) == set(schools) else selected_schools,
         short_program_labels=short_program_labels,
     )
 
@@ -257,13 +304,13 @@ def margin_of_error_pct(n: int, N: float, z: float = 1.96) -> float:
 
 def response_rate_table(df_slice: pd.DataFrame, cont_slice: pd.DataFrame) -> pd.DataFrame:
     """Per-programme response rate / margin of error for the current slice."""
-    n_by_prog = df_slice.groupby("program").size().rename("n")
-    N_by_prog = cont_slice.groupby("program")["contingent"].sum().rename("N")
+    n_by_prog = df_slice.groupby("program").size().rename("Ответов")
+    N_by_prog = cont_slice.groupby("program")["contingent"].sum().rename("Контингент")
     rr = pd.concat([n_by_prog, N_by_prog], axis=1)
-    rr["n"] = rr["n"].fillna(0).astype(int)
-    rr["RR, %"] = np.where(rr["N"] > 0, rr["n"] / rr["N"] * 100.0, np.nan)
-    rr["Погрешность ±%"] = [margin_of_error_pct(int(r.n), r.N) for r in rr.itertuples()]
-    return rr.reset_index().rename(columns={"program": "Программа", "N": "Контингент"})
+    rr["Ответов"] = rr["Ответов"].fillna(0).astype(int)
+    rr["Отклик, %"] = np.where(rr["Контингент"] > 0, rr["Ответов"] / rr["Контингент"] * 100.0, np.nan)
+    rr["Погрешность, ±%"] = [margin_of_error_pct(int(n), N) for n, N in zip(rr["Ответов"], rr["Контингент"])]
+    return rr.reset_index().rename(columns={"program": "Программа"})
 
 
 def render_response_rate(df: pd.DataFrame, cont_slice: pd.DataFrame | None, combined_note: str | None = None) -> None:
@@ -274,8 +321,8 @@ def render_response_rate(df: pd.DataFrame, cont_slice: pd.DataFrame | None, comb
         return
     if cont_slice is None or cont_slice.empty:
         st.caption(
-            "Контингент не загружен: положите `Контингент.xlsx` в `data/reference/` и запустите "
-            "`python process_contingent.py` — здесь появятся response rate и погрешность."
+            "Данные о контингенте не загружены. Чтобы рассчитать отклик и погрешность, положите файл "
+            "`Контингент.xlsx` в папку `data/reference/` и запустите `python process_contingent.py`."
         )
         return
 
@@ -287,28 +334,29 @@ def render_response_rate(df: pd.DataFrame, cont_slice: pd.DataFrame | None, comb
     moe = margin_of_error_pct(n, N)
 
     st.caption(
-        "Response rate и предельная погрешность оценивают, насколько выборка "
-        "представляет генеральную совокупность (контингент)."
+        "Отклик и предельная погрешность показывают, насколько выборка представляет "
+        "генеральную совокупность — весь контингент."
     )
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Контингент (N)", f"{int(round(N)):,}", help="Число студентов в выбранных программах/курсах (из `Контингент.xlsx`).")
-    k2.metric("Ответов (n)", f"{n:,}", help="Число анкет в текущем срезе.")
-    k3.metric("Response rate", f"{min(rr, 100):.1f}%", help="Доля контингента, заполнившая анкету (n / N).")
+    k1.metric("Контингент (N)", fmt(N, 0), help="Число студентов выбранных программ и курсов (по файлу `Контингент.xlsx`).")
+    k2.metric("Ответов (n)", fmt(n, 0), help="Число анкет в текущем срезе.")
+    k3.metric("Отклик", fmt_pct(min(rr, 100), 1), help="Доля контингента, заполнившая анкету (n / N).")
     k4.metric(
-        "Погрешность ±",
-        f"{moe:.1f}%" if np.isfinite(moe) else "н/д",
-        help="Предельная погрешность 95% (p=0.5, с поправкой на конечную совокупность). Чем меньше, тем надёжнее.",
+        "Погрешность",
+        f"±{fmt_pct(moe, 1)}" if np.isfinite(moe) else "н/д",
+        help="Предельная погрешность при 95%-й доверительной вероятности (p = 0,5, с поправкой на конечную совокупность). "
+        "Чем она меньше, тем надёжнее оценки.",
     )
     if rr > 100:
-        st.caption("⚠ По части программ ответов больше, чем в контингенте — вероятно, расхождение в данных по малым группам.")
+        st.caption("⚠ По части программ ответов больше, чем студентов в контингенте: вероятно, данные по небольшим группам расходятся.")
 
     render_interp(
-        "Как читать отклик и погрешность",
+        "Как интерпретировать отклик и погрешность",
         [
-            "Если response rate высокий (>50%), то выборка хорошо представляет контингент.",
-            "Если предельная погрешность мала (например, ±5%), то оценкам долей/средних можно доверять.",
-            "Если по программе мало ответов и большой контингент, то её отдельные выводы менее надёжны.",
-            "Погрешность считается для доли при наихудшем случае p=0.5, поэтому это консервативная (верхняя) оценка.",
+            "Если отклик высокий (больше 50%), то выборка хорошо представляет контингент.",
+            "Если предельная погрешность мала (например, ±5%), то оценкам долей и средних можно доверять.",
+            "Если по программе мало ответов при большом контингенте, то выводы по этой программе менее надёжны.",
+            "Погрешность рассчитана для доли в худшем случае (p = 0,5), поэтому это консервативная, то есть завышенная, оценка.",
         ],
     )
 
@@ -317,24 +365,26 @@ def render_response_rate(df: pd.DataFrame, cont_slice: pd.DataFrame | None, comb
         return
     if "program_display" in df.columns:
         disp = df.groupby("program")["program_display"].first()
-        rr_tbl = rr_tbl.merge(disp.rename("Короткое имя"), left_on="Программа", right_index=True, how="left")
-    rr_tbl = round_df(rr_tbl.sort_values("RR, %", ascending=False))
-    st.caption("Таблица: response rate и погрешность по программам.")
-    st.dataframe(rr_tbl, width="stretch", hide_index=True)
+        rr_tbl = rr_tbl.merge(disp.rename("Краткое название"), left_on="Программа", right_index=True, how="left")
+    rr_tbl = rr_tbl.sort_values("Отклик, %", ascending=False)
+    st.caption("Таблица: отклик и погрешность по программам.")
+    show_table(rr_tbl, decimals=1, hide_index=True)
 
     plot_df = rr_tbl.copy()
-    plot_df["__y"] = plot_df.get("Короткое имя", plot_df["Программа"]).fillna(plot_df["Программа"])
-    plot_df["RR_disp"] = plot_df["RR, %"].clip(upper=100)
+    plot_df["__y"] = plot_df.get("Краткое название", plot_df["Программа"]).fillna(plot_df["Программа"])
+    plot_df["__rr"] = plot_df["Отклик, %"].clip(upper=100)
+    st.caption("График: отклик по программам.")
     fig = px.bar(
-        plot_df.sort_values("RR, %"),
-        x="RR_disp",
+        plot_df.sort_values("Отклик, %"),
+        x="__rr",
         y="__y",
         orientation="h",
-        title="Response rate по программам",
-        labels={"RR_disp": "Response rate, %", "__y": "Программа"},
-        hover_data={"Программа": True, "__y": False, "Контингент": True, "n": True, "Погрешность ±%": ":.1f"},
-        color_discrete_sequence=[ACCENT],
+        color="__rr",
+        color_continuous_scale="Tealgrn",
+        title="Отклик по программам",
+        labels={"__rr": "Отклик, %", "__y": "Программа"},
+        hover_data={"Программа": True, "__y": False, "Контингент": True, "Ответов": True, "Погрешность, ±%": ":.1f"},
     )
-    fig.update_layout(height=max(320, 28 * len(plot_df) + 120), yaxis_title="")
+    fig.update_layout(height=max(360, 28 * len(plot_df) + 140), yaxis_title="", coloraxis_showscale=False)
     fig.update_xaxes(range=[0, 100])
     st.plotly_chart(fig, width="stretch")
