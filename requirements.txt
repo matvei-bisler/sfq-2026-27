@@ -1,0 +1,9 @@
+streamlit>=1.53,<2.0
+plotly>=5.9,<6.0
+pandas>=2.0,<3.0
+numpy>=1.26,<2.0
+scipy>=1.10,<2.0
+# statsmodels 0.15 удалил statsmodels.sandbox.stats.multicomp.multipletests,
+# который scikit-posthocs (вплоть до 0.16.0) импортирует при загрузке -> ImportError.
+statsmodels>=0.14,<0.15
+scikit-posthocs>=0.12,<1.0

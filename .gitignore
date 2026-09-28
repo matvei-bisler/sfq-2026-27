@@ -1,0 +1,15 @@
+# Personal / restricted data — never commit
+data/raw/
+data/private/
+data/reference/Контингент.xlsx
+
+# Python / tooling
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.mplconfig/
+.DS_Store
+.venv/
+.claude/settings.local.json
+notebooks/autumn_clean.csv
+notebooks/codebook.md
